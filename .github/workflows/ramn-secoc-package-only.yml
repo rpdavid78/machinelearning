@@ -15,50 +15,45 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Download previously compiled four-ECU SecOC artifact
+      - name: Download compiled SecOC ELFs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p compiled
+          mkdir compiled
           gh run download 33931724872 --repo rpdavid78/machinelearning --name ramn-secoc-elfs --dir compiled
-          ls -lah compiled
-          test -s compiled/ECUA.elf
-          test -s compiled/ECUB.elf
-          test -s compiled/ECUC.elf
-          test -s compiled/ECUD.elf
+          for f in ECUA.elf ECUB.elf ECUC.elf ECUD.elf; do test -s "compiled/$f"; done
 
-      - name: Verify compiled ELFs
+      - name: Verify ELFs
         run: |
           set -euo pipefail
           cd compiled
-          sha256sum -c ELF_SHA256SUMS.txt
+          sed 's#secoc-elf/##' ELF_SHA256SUMS.txt | sha256sum -c -
           for f in ECUA.elf ECUB.elf ECUC.elf ECUD.elf; do
-            file "$f" | grep -q 'ELF 32-bit.*ARM'
+            desc=$(file "$f")
             hdr=$(readelf -h "$f")
             syms=$(readelf -sW "$f")
+            grep -q 'ELF 32-bit.*ARM' <<<"$desc"
             grep -q 'Machine:.*ARM' <<<"$hdr"
             grep -q 'RAMN_SECOC_ProtectTx' <<<"$syms"
             grep -q 'RAMN_SECOC_VerifyRx' <<<"$syms"
           done
 
-      - name: Assemble ready-to-run Renode package
+      - name: Assemble package
         run: |
           set -euo pipefail
           PKG="$PWD/ramn-renode-lab-secoc-research-v3-prebuilt"
           mkdir -p "$PKG/firmware-secoc" "$PKG/renode" "$PKG/tools" "$PKG/docs"
           cp compiled/ECUA.elf compiled/ECUB.elf compiled/ECUC.elf compiled/ECUD.elf "$PKG/firmware-secoc/"
-          cp compiled/ELF_SHA256SUMS.txt compiled/BUILD_PROVENANCE.txt "$PKG/firmware-secoc/"
+          cp compiled/BUILD_PROVENANCE.txt "$PKG/firmware-secoc/"
+          sed 's#secoc-elf/##' compiled/ELF_SHA256SUMS.txt > "$PKG/firmware-secoc/ELF_SHA256SUMS.txt"
 
           cat > "$PKG/renode/lab-secoc-custom.resc" <<'EOF'
           :name: RAMN Argos-Car SecOC research lab - prebuilt firmware
-          :description: Runs 4 RAMN ECUs with locally built SecOC-like firmware images.
-
+          :description: Runs 4 RAMN ECUs with prebuilt SecOC-like firmware images.
           emulation CreateCANHub "canHub"
-
           set global.name "ECUA"
           mach create $name
           include @platforms/boards/ramn.repl
@@ -70,7 +65,6 @@ jobs:
           """
           runMacro $reset
           connector Connect sysbus.fdcan1 canHub
-
           set global.name "ECUB"
           mach create $name
           include @platforms/boards/ramn.repl
@@ -82,7 +76,6 @@ jobs:
           """
           runMacro $reset
           connector Connect sysbus.fdcan1 canHub
-
           set global.name "ECUC"
           mach create $name
           include @platforms/boards/ramn.repl
@@ -94,7 +87,6 @@ jobs:
           """
           runMacro $reset
           connector Connect sysbus.fdcan1 canHub
-
           set global.name "ECUD"
           mach create $name
           include @platforms/boards/ramn.repl
@@ -106,7 +98,6 @@ jobs:
           """
           runMacro $reset
           connector Connect sysbus.fdcan1 canHub
-
           emulation SetGlobalQuantum "0.00001"
           machine CreateSocketCANBridge "socketcan" "vcan0" ensureFdFrames=true
           connector Connect socketcan canHub
@@ -118,10 +109,7 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
           IFACE=${1:-vcan0}
-          if [[ "$IFACE" != vcan* ]]; then
-            echo "Refusing non-vcan interface: $IFACE" >&2
-            exit 2
-          fi
+          [[ "$IFACE" == vcan* ]] || { echo "Refusing non-vcan interface: $IFACE" >&2; exit 2; }
           sudo modprobe vcan
           sudo ip link del "$IFACE" 2>/dev/null || true
           sudo ip link add dev "$IFACE" type vcan
@@ -141,8 +129,7 @@ jobs:
           for f in ECUA.elf ECUB.elf ECUC.elf ECUD.elf; do
             test -s "$f"
             if command -v readelf >/dev/null 2>&1; then
-              hdr=$(readelf -h "$f")
-              syms=$(readelf -sW "$f")
+              hdr=$(readelf -h "$f"); syms=$(readelf -sW "$f")
               grep -q 'Machine:.*ARM' <<<"$hdr"
               grep -q 'RAMN_SECOC_ProtectTx' <<<"$syms"
               grep -q 'RAMN_SECOC_VerifyRx' <<<"$syms"
@@ -167,26 +154,17 @@ jobs:
           cat > "$PKG/README.md" <<'EOF'
           # Argos-Car — RAMN + Renode + SecOC-like (v3 prebuilt)
 
-          Pacote de pesquisa acadêmica para o laboratório virtual RAMN + Renode + SocketCAN/vcan0. Esta versão já contém os quatro `.elf` recompilados com o mecanismo SecOC-like; não é necessário recompilar para executar o experimento.
+          Pacote de pesquisa acadêmica para RAMN + Renode + SocketCAN/vcan0. Esta versão já contém os quatro `.elf` recompilados com o mecanismo SecOC-like; não é necessário recompilar.
 
           ## Firmware incluído
 
-          ```text
-          firmware-secoc/ECUA.elf
-          firmware-secoc/ECUB.elf
-          firmware-secoc/ECUC.elf
-          firmware-secoc/ECUD.elf
-          ```
+          `firmware-secoc/ECUA.elf`, `ECUB.elf`, `ECUC.elf` e `ECUD.elf`.
 
           Proveniência: RAMN commit `8ea9db078460e506f01e39182420848cc0b4bedb`, build `Release`, STM32CubeIDE via `xanderhendriks/stm32cubeide:2.1.1`, defines `ENABLE_SECOC_LIKE` e `WATCHDOG_ENABLE`.
 
-          Os quatro binários foram verificados como ELF ARM/EABI5 e contêm `RAMN_SECOC_ProtectTx` e `RAMN_SECOC_VerifyRx`. Os hashes estão em `firmware-secoc/ELF_SHA256SUMS.txt`.
-
           ## Relação com AUTOSAR SecOC
 
-          Esta é uma PoC acadêmica inspirada no **AUTOSAR Secure Onboard Communication (SecOC)**. Não é uma implementação AUTOSAR Classic completa nem uma implementação conforme/certificada.
-
-          O fluxo AUTOSAR conceitual é:
+          Esta é uma PoC acadêmica inspirada no AUTOSAR Secure Onboard Communication (SecOC), não uma pilha AUTOSAR Classic completa nem uma implementação conforme/certificada.
 
           ```text
           Application -> COM -> PduR -> SecOC -> PduR -> CanIf -> CanDrv -> CAN
@@ -194,31 +172,15 @@ jobs:
                                       +-> Csm / CryptoIf / Crypto Driver
           ```
 
-          A PoC implementa diretamente no RAMN as duas propriedades centrais usadas pelo SecOC: autenticidade/integridade por MAC e freshness/anti-replay por contador.
-
-          No frame default RAMN de 8 bytes:
-
-          ```text
-          bytes 0..1  payload funcional
-          bytes 2..3  freshness de 16 bits
-          bytes 4..7  HMAC-SHA-256 truncado para 32 bits
-          ```
-
-          O autenticador é calculado conceitualmente como:
+          A PoC reproduz diretamente no RAMN as duas propriedades centrais: autenticação/integridade por MAC e freshness/anti-replay. O frame default de 8 bytes usa bytes 0..1 para payload funcional, 2..3 para freshness de 16 bits e 4..7 para HMAC-SHA-256 truncado a 32 bits. Conceitualmente:
 
           ```text
           Trunc32(HMAC-SHA256_K(0xA1 || CAN_ID || payload || freshness))
           ```
 
-          No TX, a proteção é aplicada no caminho de `RAMN_DBC_FormatDefaultPeriodicMessage`. No RX, a autenticação e o freshness são verificados antes de o decoder DBC atualizar o estado lógico da ECU.
-
-          Não foram implementados como módulos AUTOSAR separados `COM`, `PduR`, `SecOC`, `Csm`, `CryptoIf`, `CanIf`, `CanDrv`, configuração ARXML ou um Freshness Manager AUTOSAR completo. A nomenclatura correta é **RAMN com mecanismo SecOC-like**.
+          No TX, a proteção é aplicada no caminho de `RAMN_DBC_FormatDefaultPeriodicMessage`; no RX, MAC e freshness são verificados antes da atualização do estado DBC. Não são implementados como módulos independentes `COM`, `PduR`, `SecOC`, `Csm`, `CryptoIf`, `CanIf`, `CanDrv`, ARXML ou Freshness Manager completo. A nomenclatura correta é **RAMN com mecanismo SecOC-like**.
 
           ## Executar
-
-          Pré-requisitos: Renode com a plataforma RAMN, `iproute2` e `can-utils`.
-
-          No diretório extraído:
 
           ```bash
           ./tools/verify_prebuilt_elfs.sh
@@ -232,34 +194,27 @@ jobs:
           candump -x vcan0
           ```
 
-          O `.resc` carrega diretamente os quatro ELFs locais em `firmware-secoc/`.
+          O `.resc` carrega diretamente os quatro ELFs locais.
 
           ## Hipótese experimental Argos-Car
 
-          ```text
-          atacante sem chave          -> MAC inválido -> SecOC-like rejeita
-          replay de frame legítimo    -> freshness repetido -> SecOC-like rejeita
-          flooding/burst              -> SecOC não impede ocupação do barramento -> P0-CAN-001
-          supressão/gap               -> SecOC não impede -> P0-CAN-005
-          ECU com chave comprometida  -> MAC/freshness válidos -> SecOC pode aceitar -> IDS continua necessário
-          ```
-
-          O objetivo é separar experimentalmente a garantia criptográfica da detecção comportamental do Argos-Car.
+          - atacante sem chave: MAC inválido, rejeição pelo SecOC-like;
+          - replay: freshness repetido, rejeição pelo SecOC-like;
+          - flooding/burst: permanece relevante para P0-CAN-001;
+          - supressão/gap: permanece relevante para P0-CAN-005;
+          - ECU comprometida com chave válida: pode passar pela autenticação, mantendo a necessidade de IDS comportamental, especialmente P0-CAN-002.
           EOF
           sed -i 's/^          //' "$PKG/README.md"
 
           cat > "$PKG/docs/BUILD_VERIFICATION.md" <<'EOF'
           # Build verification
-
-          - Four firmware targets compiled successfully: ECUA, ECUB, ECUC, ECUD.
-          - RAMN source pinned to commit `8ea9db078460e506f01e39182420848cc0b4bedb`.
-          - Build mode: Release.
-          - Defines: `ENABLE_SECOC_LIKE`, `WATCHDOG_ENABLE`.
-          - Each ELF is ARM/EABI5 and exports `RAMN_SECOC_ProtectTx` and `RAMN_SECOC_VerifyRx`.
-          - SHA-256 checksums are stored in `firmware-secoc/ELF_SHA256SUMS.txt`.
+          - Four targets compiled successfully: ECUA, ECUB, ECUC, ECUD.
+          - RAMN commit: `8ea9db078460e506f01e39182420848cc0b4bedb`.
+          - Release build with `ENABLE_SECOC_LIKE` and `WATCHDOG_ENABLE`.
+          - Each ELF is ARM/EABI5 and contains `RAMN_SECOC_ProtectTx` and `RAMN_SECOC_VerifyRx`.
+          - Per-ELF SHA-256 hashes are in `firmware-secoc/ELF_SHA256SUMS.txt`.
           EOF
           sed -i 's/^          //' "$PKG/docs/BUILD_VERIFICATION.md"
-
           (cd "$PKG" && ./tools/verify_prebuilt_elfs.sh)
 
       - name: Upload ready-to-run package
